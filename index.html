@@ -31,6 +31,7 @@
   .mute { color:var(--mute); font-size:14px; }
   .bar { height:14px; background:var(--line); border-radius:8px; overflow:hidden; margin-top:10px; }
   .bar > i { display:block; height:100%; width:0; background:var(--brand); transition:width .2s; }
+  .swal2-popup { font-family: "Noto Sans Thai", system-ui, sans-serif !important; }
   .hidden { display:none; }
 </style>
 </head>
@@ -94,6 +95,7 @@
 </main>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/limonte-sweetalert2/11.14.5/sweetalert2.all.min.js"></script>
 <script>
 // ───── ตั้งค่า: ใส่ URL ของ Web app (Deploy → Web app → URL ที่ลงท้าย /exec) ─────
 const API_URL = 'https://script.google.com/macros/s/AKfycbz0C1PnTMRPWwG0loOCpPHC60cGTPzWKxVVa0ZwCVmDA3j3Z40GbxTzW6otreDR7vI0/exec';
@@ -124,6 +126,20 @@ async function api(body) {
   catch (e) { throw new Error('เซิร์ฟเวอร์ไม่ได้ตอบเป็น JSON (ตรวจการ Deploy: Anyone / New version): ' + text.replace(/<[^>]*>/g, ' ').trim().slice(0, 80)); }
   if (j.auth) logout(j.error);
   return j;
+}
+
+// popup ยืนยันด้วย SweetAlert2 (ถ้าโหลดไม่ได้ใช้ confirm ของเบราว์เซอร์แทน)
+async function ask(title, html, okText) {
+  if (!window.Swal) return confirm(title + '\n' + html.replace(/<[^>]*>/g, ' '));
+  const root = getComputedStyle(document.documentElement);
+  const r = await Swal.fire({
+    title, html, icon: 'question', showCancelButton: true, focusCancel: true,
+    confirmButtonText: okText || 'ยืนยัน', cancelButtonText: 'ยกเลิก', reverseButtons: true,
+    confirmButtonColor: root.getPropertyValue('--brand').trim() || '#0f766e',
+    background: root.getPropertyValue('--card').trim() || '#fff',
+    color: root.getPropertyValue('--ink').trim() || '#1d2430'
+  });
+  return r.isConfirmed;
 }
 
 function show(el, cls, text) { el.innerHTML = ''; if (!text) return; const d = document.createElement('div'); d.className = 'msg ' + cls; d.textContent = text; el.appendChild(d); }
@@ -244,7 +260,7 @@ $('saveBtn').onclick = async () => {
   try {
     let j = await send(false);
     if (j.needConfirm) {
-      if (!confirm(`บ้านนี้มีพิกัดอยู่แล้ว (${j.old.lat.toFixed(6)}, ${j.old.lng.toFixed(6)})\nต้องการเขียนทับหรือไม่?`)) return;
+      if (!await ask('เขียนทับพิกัดเดิม?', `บ้านเลขที่ ${esc(current.house_no)} มีพิกัดอยู่แล้ว<br><b>${j.old.lat.toFixed(6)}, ${j.old.lng.toFixed(6)}</b><br>ใหม่: <b>${picked.lat.toFixed(6)}, ${picked.lng.toFixed(6)}</b>`, 'เขียนทับ')) return;
       j = await send(true);
     }
     if (!j.ok) return show($('msg'), 'bad', j.error);
@@ -352,7 +368,7 @@ $('checkBtn').onclick = async () => {
 };
 
 $('importBtn').onclick = async () => {
-  if (!confirm('ยืนยันนำเข้าข้อมูลบ้านเข้า Google Sheet?')) return;
+  if (!await ask('ยืนยันนำเข้าข้อมูลบ้าน?', `นำเข้า ${csvRows.length} แถวเข้า Google Sheet<br>บ้านเดิมจะอัปเดตเฉพาะข้อมูลบ้าน ไม่แตะพิกัด`, 'นำเข้า')) return;
   $('checkBtn').disabled = $('importBtn').disabled = true;
   try {
     const t = await runImport(false);
