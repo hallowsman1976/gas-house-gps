@@ -36,6 +36,7 @@
 <header>
   <h1>จุดพิกัดหลังคาเรือน</h1>
   <span id="who" class="mute"></span>
+  <button id="adminBtn" class="ghost hidden">นำเข้าบ้าน</button>
   <button id="logout" class="ghost hidden">ออก</button>
 </header>
 
@@ -48,6 +49,21 @@
     <p></p>
     <button id="loginBtn">เข้าสู่ระบบ</button>
     <div id="loginMsg"></div>
+  </section>
+
+  <section id="importView" class="hidden">
+    <div class="card">
+      <b>นำเข้าข้อมูลบ้านจาก houses.csv</b>
+      <p class="mute">คอลัมน์ที่ต้องมี: pcucode, hcode, village_no, village_name, house_no (ตัวเลือก: head_name, lat, lng) &middot;
+        บ้านที่มีอยู่แล้วจะอัปเดตเฉพาะข้อมูลบ้าน <b>ไม่แตะพิกัดที่จุดไว้แล้ว</b> &middot; บ้านใหม่จะถูกเพิ่ม (พร้อมพิกัดจากไฟล์ถ้าอยู่ในกรอบ)</p>
+      <input id="csvFile" type="file" accept=".csv,text/csv">
+      <div id="importPreview"></div>
+      <div class="row" style="margin-top:8px">
+        <button id="checkBtn" disabled>ตรวจไฟล์</button>
+        <button id="importBtn" disabled>นำเข้า</button>
+      </div>
+      <div id="importMsg"></div>
+    </div>
   </section>
 
   <section id="appView" class="hidden">
@@ -83,7 +99,7 @@ const store = {
   del(k) { try { sessionStorage.removeItem(k); } catch (e) {} }
 };
 
-let token = store.get('token'), cfg = { accWarnM: 30, bbox: null };
+let role = store.get('role'), token = store.get('token'), cfg = { accWarnM: 30, bbox: null };
 let houses = [], current = null, marker = null, picked = null, map = null, source = 'map', accuracy = null;
 
 async function api(body) {
@@ -106,7 +122,7 @@ $('loginBtn').onclick = async () => {
   try {
     const j = await api({ action: 'login', username: $('u').value, pin: $('p').value });
     if (!j.ok) return show($('loginMsg'), 'bad', j.error);
-    token = j.token; store.set('token', token); cfg = j.config; store.set('cfg', JSON.stringify(cfg)); store.set('name', j.name); $('p').value = '';
+    token = j.token; store.set('token', token); cfg = j.config; store.set('cfg', JSON.stringify(cfg)); store.set('name', j.name); role = j.role; store.set('role', role); $('p').value = '';
     $('who').textContent = j.name;
     enterApp();
   } catch (e) { show($('loginMsg'), 'bad', 'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้'); }
@@ -116,20 +132,26 @@ $('p').addEventListener('keydown', e => { if (e.key === 'Enter') $('loginBtn').c
 $('logout').onclick = () => logout();
 
 function logout(m) {
-  token = null; store.del('token'); store.del('cfg'); store.del('name'); houses = []; current = null;
-  $('appView').classList.add('hidden'); $('loginView').classList.remove('hidden'); $('logout').classList.add('hidden'); $('who').textContent = '';
+  token = null; store.del('token'); store.del('cfg'); store.del('name'); store.del('role'); role = null; houses = []; current = null;
+  $('appView').classList.add('hidden'); $('importView').classList.add('hidden'); $('adminBtn').classList.add('hidden'); $('loginView').classList.remove('hidden'); $('logout').classList.add('hidden'); $('who').textContent = '';
   show($('loginMsg'), m ? 'warn' : 'ok', m || '');
 }
 
 async function enterApp() {
   $('loginView').classList.add('hidden'); $('appView').classList.remove('hidden'); $('logout').classList.remove('hidden');
+  $('adminBtn').classList.toggle('hidden', role !== 'admin');
   initMap();
   const j = await api({ action: 'listHouses' });
   if (!j.ok) return;
-  houses = j.houses;
+  houses = j.houses; buildVillages();
+}
+
+function buildVillages() {
+  const keep = $('vill').value;
   const vs = new Map(); houses.forEach(h => vs.set(h.village_no, h.village_name));
   $('vill').innerHTML = [...vs].sort((a, b) => a[0].localeCompare(b[0], 'th', { numeric: true }))
     .map(([n, name]) => `<option value="${esc(n)}">หมู่ ${esc(n)} ${esc(name || '')}</option>`).join('');
+  if (keep && vs.has(keep)) $('vill').value = keep;
   fillHouses();
 }
 
@@ -225,6 +247,97 @@ function send(confirmOverwrite) {
   return api({ action: 'saveCoord', house_id: current.house_id, lat: picked.lat, lng: picked.lng,
     accuracy_m: accuracy, source, confirmOverwrite });
 }
+
+
+// ───── นำเข้า houses.csv (เฉพาะ admin) ─────
+const IMPORT_CHUNK = 300;
+let csvRows = [];
+
+$('adminBtn').onclick = () => {
+  const toImport = $('importView').classList.contains('hidden');
+  $('importView').classList.toggle('hidden', !toImport);
+  $('appView').classList.toggle('hidden', toImport);
+  $('adminBtn').textContent = toImport ? 'กลับไปจุดพิกัด' : 'นำเข้าบ้าน';
+  if (!toImport) { buildVillages(); if (map) setTimeout(() => map.invalidateSize(), 50); }
+};
+
+function parseCSV(text) {
+  text = text.replace(/^﻿/, '');
+  const first = text.split(/\r?\n/, 1)[0];
+  const delim = [',', ';', '\t'].map(d => [d, first.split(d).length]).sort((a, b) => b[1] - a[1])[0][0];
+  const rows = []; let row = [], f = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) { if (c === '"') { if (text[i + 1] === '"') { f += '"'; i++; } else q = false; } else f += c; }
+    else if (c === '"') q = true;
+    else if (c === delim) { row.push(f); f = ''; }
+    else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; row.push(f); rows.push(row); row = []; f = ''; }
+    else f += c;
+  }
+  if (f !== '' || row.length) { row.push(f); rows.push(row); }
+  return rows.filter(r => r.some(x => x.trim() !== ''));
+}
+
+$('csvFile').onchange = async e => {
+  csvRows = []; $('importBtn').disabled = true; $('checkBtn').disabled = true; show($('importMsg'), '', ''); $('importPreview').innerHTML = '';
+  const file = e.target.files[0]; if (!file) return;
+  const rows = parseCSV(await file.text());
+  if (rows.length < 2) return show($('importMsg'), 'bad', 'ไฟล์ว่างหรืออ่านไม่ได้');
+  const head = rows[0].map(h => h.trim().toLowerCase());
+  const need = ['pcucode', 'hcode', 'village_no', 'village_name', 'house_no'];
+  const missing = need.filter(k => !head.includes(k));
+  if (missing.length) return show($('importMsg'), 'bad', 'ไม่พบคอลัมน์: ' + missing.join(', '));
+  csvRows = rows.slice(1).map((r, i) => {
+    const o = { _line: i + 2 };
+    head.forEach((h, j) => { o[h] = (r[j] || '').trim(); });
+    return o;
+  });
+  $('importPreview').innerHTML = `<p class="mute">อ่านได้ ${csvRows.length} แถว · ตัวอย่าง: ${esc(csvRows[0].house_no)} หมู่ ${esc(csvRows[0].village_no)} ${esc(csvRows[0].village_name)}</p>`;
+  $('checkBtn').disabled = false;
+};
+
+async function runImport(dry) {
+  const tot = { added: 0, updated: 0, unchanged: 0, coordSkipped: 0, errorCount: 0, errors: [] };
+  for (let i = 0; i < csvRows.length; i += IMPORT_CHUNK) {
+    show($('importMsg'), 'ok', `${dry ? 'กำลังตรวจ' : 'กำลังนำเข้า'} ${Math.min(i + IMPORT_CHUNK, csvRows.length)}/${csvRows.length}...`);
+    const j = await api({ action: 'importHouses', dryRun: dry, rows: csvRows.slice(i, i + IMPORT_CHUNK) });
+    if (!j.ok) { show($('importMsg'), 'bad', j.error + (i ? ` (นำเข้าไปแล้วถึงแถวที่ ${i})` : '')); return null; }
+    ['added', 'updated', 'unchanged', 'coordSkipped', 'errorCount'].forEach(k => tot[k] += j[k]);
+    tot.errors.push(...j.errors);
+  }
+  return tot;
+}
+
+function summary(t, dry) {
+  let m = `${dry ? 'ผลตรวจ' : 'นำเข้าเสร็จ'}: เพิ่มใหม่ ${t.added} · อัปเดต ${t.updated} · ไม่เปลี่ยน ${t.unchanged}`;
+  if (t.coordSkipped) m += ` · พิกัดนอกกรอบถูกข้าม ${t.coordSkipped}`;
+  if (t.errorCount) m += ` · แถวผิดพลาด ${t.errorCount} (เช่น ` + t.errors.slice(0, 3).map(e => `แถว ${e.row}: ${e.why}`).join('; ') + ')';
+  return m;
+}
+
+$('checkBtn').onclick = async () => {
+  $('checkBtn').disabled = $('importBtn').disabled = true;
+  try {
+    const t = await runImport(true);
+    if (!t) return;
+    show($('importMsg'), t.errorCount ? 'warn' : 'ok', summary(t, true));
+    $('importBtn').disabled = (t.added + t.updated) === 0;
+  } catch (e) { show($('importMsg'), 'bad', 'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้'); }
+  finally { $('checkBtn').disabled = false; }
+};
+
+$('importBtn').onclick = async () => {
+  if (!confirm('ยืนยันนำเข้าข้อมูลบ้านเข้า Google Sheet?')) return;
+  $('checkBtn').disabled = $('importBtn').disabled = true;
+  try {
+    const t = await runImport(false);
+    if (!t) return;
+    show($('importMsg'), t.errorCount ? 'warn' : 'ok', summary(t, false));
+    houses = [];   // โหลดรายการใหม่ตอนกลับไปหน้าจุดพิกัด
+    const j = await api({ action: 'listHouses' }); if (j.ok) { houses = j.houses; }
+  } catch (e) { show($('importMsg'), 'bad', 'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ ผลอาจนำเข้าไปบางส่วน ให้ตรวจไฟล์ซ้ำ'); }
+  finally { $('checkBtn').disabled = false; }
+};
 
 // ───── เริ่มต้น: ถ้ามี token ในเซสชันนี้ ลองใช้ต่อ ─────
 (async () => {
