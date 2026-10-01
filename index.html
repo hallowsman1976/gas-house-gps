@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>จุดพิกัดหลังคาเรือน</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1d2430; --mute:#667085; --line:#d9dde3; --brand:#0f766e; --warn:#b45309; --bad:#b91c1c; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#111418; --card:#1b2027; --ink:#e8ebf0; --mute:#97a1ae; --line:#2e3640; --brand:#2dd4bf; --warn:#fbbf24; --bad:#f87171; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 system-ui,"Noto Sans Thai",sans-serif; }
+  header { padding:10px 16px; display:flex; align-items:center; gap:8px; background:var(--card); border-bottom:1px solid var(--line); }
+  header h1 { font-size:17px; margin:0; flex:1; }
+  main { max-width:760px; margin:0 auto; padding:12px 16px 32px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; margin-bottom:12px; }
+  label { display:block; font-size:14px; color:var(--mute); margin:8px 0 4px; }
+  input, select, button { font:inherit; padding:10px 12px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--ink); width:100%; }
+  button { cursor:pointer; background:var(--brand); color:#fff; border:0; font-weight:600; }
+  button.ghost { background:transparent; color:var(--ink); border:1px solid var(--line); width:auto; }
+  button:disabled { opacity:.5; cursor:default; }
+  .row { display:flex; gap:8px; } .row > * { flex:1; }
+  #map { height:min(55vh,420px); border-radius:10px; border:1px solid var(--line); margin:8px 0; }
+  .msg { padding:10px 12px; border-radius:8px; margin:8px 0; font-size:15px; }
+  .msg.ok { background:rgba(15,118,110,.12); } .msg.warn { background:rgba(180,83,9,.14); color:var(--warn); } .msg.bad { background:rgba(185,28,28,.12); color:var(--bad); }
+  .mute { color:var(--mute); font-size:14px; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>จุดพิกัดหลังคาเรือน</h1>
+  <span id="who" class="mute"></span>
+  <button id="logout" class="ghost hidden">ออก</button>
+</header>
+
+<main>
+  <section id="loginView" class="card">
+    <label for="u">ชื่อผู้ใช้</label>
+    <input id="u" autocomplete="username" autocapitalize="none">
+    <label for="p">PIN</label>
+    <input id="p" type="password" inputmode="numeric" autocomplete="current-password">
+    <p></p>
+    <button id="loginBtn">เข้าสู่ระบบ</button>
+    <div id="loginMsg"></div>
+  </section>
+
+  <section id="appView" class="hidden">
+    <div class="card">
+      <div class="row">
+        <div><label for="vill">หมู่บ้าน</label><select id="vill"></select></div>
+        <div><label for="house">บ้านเลขที่</label><select id="house"></select></div>
+      </div>
+      <input id="q" placeholder="ค้นหาเลขที่บ้านหรือชื่อ" style="margin-top:8px">
+      <div id="houseInfo" class="mute" style="margin-top:6px"></div>
+    </div>
+
+    <div class="card">
+      <button id="gpsBtn">ใช้ตำแหน่งปัจจุบัน (GPS)</button>
+      <div id="map"></div>
+      <div id="coordInfo" class="mute">แตะบนแผนที่หรือลากหมุดเพื่อปรับตำแหน่ง</div>
+      <div id="msg"></div>
+      <p></p>
+      <button id="saveBtn" disabled>บันทึกพิกัด</button>
+    </div>
+  </section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+// ───── ตั้งค่า: ใส่ URL ของ Web app (Deploy → Web app → URL ที่ลงท้าย /exec) ─────
+const API_URL = 'https://script.google.com/macros/s/AKfycbz0C1PnTMRPWwG0loOCpPHC60cGTPzWKxVVa0ZwCVmDA3j3Z40GbxTzW6otreDR7vI0/exec';
+
+const $ = id => document.getElementById(id);
+const store = {
+  get(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } },
+  set(k, v) { try { sessionStorage.setItem(k, v); } catch (e) {} },
+  del(k) { try { sessionStorage.removeItem(k); } catch (e) {} }
+};
+
+let token = store.get('token'), cfg = { accWarnM: 30, bbox: null };
+let houses = [], current = null, marker = null, picked = null, map = null, source = 'map', accuracy = null;
+
+async function api(body) {
+  const res = await fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },   // เลี่ยง preflight (Apps Script ตั้ง CORS เองไม่ได้)
+    body: JSON.stringify(Object.assign({ token }, body))
+  });
+  const j = await res.json();
+  if (j.auth) logout(j.error);
+  return j;
+}
+
+function show(el, cls, text) { el.innerHTML = ''; if (!text) return; const d = document.createElement('div'); d.className = 'msg ' + cls; d.textContent = text; el.appendChild(d); }
+
+// ───── เข้าสู่ระบบ ─────
+$('loginBtn').onclick = async () => {
+  $('loginBtn').disabled = true;
+  show($('loginMsg'), 'ok', 'กำลังตรวจสอบ...');
+  try {
+    const j = await api({ action: 'login', username: $('u').value, pin: $('p').value });
+    if (!j.ok) return show($('loginMsg'), 'bad', j.error);
+    token = j.token; store.set('token', token); cfg = j.config; store.set('cfg', JSON.stringify(cfg)); store.set('name', j.name); $('p').value = '';
+    $('who').textContent = j.name;
+    enterApp();
+  } catch (e) { show($('loginMsg'), 'bad', 'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้'); }
+  finally { $('loginBtn').disabled = false; }
+};
+$('p').addEventListener('keydown', e => { if (e.key === 'Enter') $('loginBtn').click(); });
+$('logout').onclick = () => logout();
+
+function logout(m) {
+  token = null; store.del('token'); store.del('cfg'); store.del('name'); houses = []; current = null;
+  $('appView').classList.add('hidden'); $('loginView').classList.remove('hidden'); $('logout').classList.add('hidden'); $('who').textContent = '';
+  show($('loginMsg'), m ? 'warn' : 'ok', m || '');
+}
+
+async function enterApp() {
+  $('loginView').classList.add('hidden'); $('appView').classList.remove('hidden'); $('logout').classList.remove('hidden');
+  initMap();
+  const j = await api({ action: 'listHouses' });
+  if (!j.ok) return;
+  houses = j.houses;
+  const vs = new Map(); houses.forEach(h => vs.set(h.village_no, h.village_name));
+  $('vill').innerHTML = [...vs].sort((a, b) => a[0].localeCompare(b[0], 'th', { numeric: true }))
+    .map(([n, name]) => `<option value="${esc(n)}">หมู่ ${esc(n)} ${esc(name || '')}</option>`).join('');
+  fillHouses();
+}
+
+function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+function fillHouses() {
+  const q = $('q').value.trim().toLowerCase();
+  const list = houses.filter(h => h.village_no === $('vill').value &&
+    (!q || h.house_no.toLowerCase().includes(q) || (h.head_name || '').toLowerCase().includes(q)))
+    .sort((a, b) => a.house_no.localeCompare(b.house_no, 'th', { numeric: true }));
+  $('house').innerHTML = list.map(h => `<option value="${esc(h.house_id)}">${esc(h.house_no)}${h.lat !== null ? ' ✓' : ''}</option>`).join('');
+  selectHouse();
+}
+$('vill').onchange = fillHouses; $('q').oninput = fillHouses; $('house').onchange = selectHouse;
+
+function selectHouse() {
+  current = houses.find(h => h.house_id === $('house').value) || null;
+  picked = null; source = 'map'; accuracy = null; show($('msg'), '', '');
+  if (marker) { map.removeLayer(marker); marker = null; }
+  if (!current) { $('houseInfo').textContent = 'ไม่พบบ้าน'; $('saveBtn').disabled = true; return; }
+  $('houseInfo').textContent = (current.head_name || '') + (current.lat !== null ? ` · มีพิกัดแล้ว ${current.lat.toFixed(6)}, ${current.lng.toFixed(6)}` : ' · ยังไม่มีพิกัด');
+  if (current.lat !== null) { setMarker(current.lat, current.lng); map.setView([current.lat, current.lng], 19); picked = null; }
+  updateCoordInfo();
+}
+
+// ───── แผนที่ ─────
+function initMap() {
+  if (map) { setTimeout(() => map.invalidateSize(), 50); return; }
+  const b = cfg.bbox;
+  const center = b ? [(b.latMin + b.latMax) / 2, (b.lngMin + b.lngMax) / 2] : [13.75, 100.5];
+  map = L.map('map').setView(center, 16);
+  const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' });
+  const sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Esri World Imagery' });
+  osm.addTo(map);
+  L.control.layers({ 'แผนที่': osm, 'ภาพดาวเทียม': sat }).addTo(map);
+  map.on('click', e => { setPoint(e.latlng.lat, e.latlng.lng, 'map', null); });
+}
+
+function setMarker(lat, lng) {
+  if (marker) map.removeLayer(marker);
+  marker = L.marker([lat, lng], { draggable: true }).addTo(map);
+  marker.on('dragend', () => { const p = marker.getLatLng(); setPoint(p.lat, p.lng, 'map', null); });
+}
+
+function setPoint(lat, lng, src, acc) {
+  picked = { lat, lng }; source = src; accuracy = acc;
+  setMarker(lat, lng); updateCoordInfo();
+}
+
+function updateCoordInfo() {
+  $('saveBtn').disabled = !(current && picked);
+  $('coordInfo').textContent = picked
+    ? `พิกัดที่เลือก ${picked.lat.toFixed(6)}, ${picked.lng.toFixed(6)}` + (accuracy != null ? ` (แม่นยำ ±${Math.round(accuracy)} ม.)` : '')
+    : 'แตะบนแผนที่หรือลากหมุดเพื่อปรับตำแหน่ง';
+}
+
+$('gpsBtn').onclick = () => {
+  if (!navigator.geolocation) return show($('msg'), 'bad', 'อุปกรณ์นี้ไม่รองรับ GPS');
+  show($('msg'), 'ok', 'กำลังหาตำแหน่ง...');
+  navigator.geolocation.getCurrentPosition(pos => {
+    const { latitude, longitude, accuracy: acc } = pos.coords;
+    setPoint(latitude, longitude, 'gps', acc);
+    map.setView([latitude, longitude], 19);
+    if (acc > cfg.accWarnM) show($('msg'), 'warn', `GPS แม่นยำเพียง ±${Math.round(acc)} ม. แนะนำให้ลากหมุดปรับให้ตรงหลังคา หรือย้ายไปที่โล่งแล้วลองใหม่`);
+    else show($('msg'), 'ok', `ได้ตำแหน่ง แม่นยำ ±${Math.round(acc)} ม.`);
+  }, err => show($('msg'), 'bad', err.code === 1 ? 'ไม่ได้อนุญาตการเข้าถึงตำแหน่ง' : 'หาตำแหน่งไม่ได้ ลองใหม่หรือแตะบนแผนที่'),
+  { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+};
+
+// ───── บันทึก ─────
+$('saveBtn').onclick = async () => {
+  if (!current || !picked) return;
+  const b = cfg.bbox;
+  if (b && (picked.lat < b.latMin || picked.lat > b.latMax || picked.lng < b.lngMin || picked.lng > b.lngMax))
+    return show($('msg'), 'bad', 'พิกัดอยู่นอกพื้นที่ที่กำหนด');
+  $('saveBtn').disabled = true;
+  try {
+    let j = await send(false);
+    if (j.needConfirm) {
+      if (!confirm(`บ้านนี้มีพิกัดอยู่แล้ว (${j.old.lat.toFixed(6)}, ${j.old.lng.toFixed(6)})\nต้องการเขียนทับหรือไม่?`)) return;
+      j = await send(true);
+    }
+    if (!j.ok) return show($('msg'), 'bad', j.error);
+    current.lat = j.lat; current.lng = j.lng; picked = null; accuracy = null;
+    show($('msg'), 'ok', 'บันทึกพิกัดแล้ว');
+    const idx = $('house').selectedIndex; fillHouses(); $('house').selectedIndex = Math.min(idx, $('house').options.length - 1); selectHouse();
+    show($('msg'), 'ok', 'บันทึกพิกัดแล้ว');
+  } catch (e) { show($('msg'), 'bad', 'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ ยังไม่ได้บันทึก'); }
+  finally { updateCoordInfo(); }
+};
+
+function send(confirmOverwrite) {
+  return api({ action: 'saveCoord', house_id: current.house_id, lat: picked.lat, lng: picked.lng,
+    accuracy_m: accuracy, source, confirmOverwrite });
+}
+
+// ───── เริ่มต้น: ถ้ามี token ในเซสชันนี้ ลองใช้ต่อ ─────
+(async () => {
+  if (!token) return;
+  try { cfg = JSON.parse(store.get('cfg')) || cfg; } catch (e) {}
+  $('who').textContent = store.get('name') || '';
+  try { await enterApp(); } catch (e) {}
+})();
+</script>
+</body>
+</html>
