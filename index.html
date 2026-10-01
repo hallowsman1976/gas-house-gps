@@ -29,6 +29,8 @@
   .msg { padding:10px 12px; border-radius:8px; margin:8px 0; font-size:15px; }
   .msg.ok { background:rgba(15,118,110,.12); } .msg.warn { background:rgba(180,83,9,.14); color:var(--warn); } .msg.bad { background:rgba(185,28,28,.12); color:var(--bad); }
   .mute { color:var(--mute); font-size:14px; }
+  .bar { height:14px; background:var(--line); border-radius:8px; overflow:hidden; margin-top:10px; }
+  .bar > i { display:block; height:100%; width:0; background:var(--brand); transition:width .2s; }
   .hidden { display:none; }
 </style>
 </head>
@@ -58,6 +60,10 @@
         บ้านที่มีอยู่แล้วจะอัปเดตเฉพาะข้อมูลบ้าน <b>ไม่แตะพิกัดที่จุดไว้แล้ว</b> &middot; บ้านใหม่จะถูกเพิ่ม (พร้อมพิกัดจากไฟล์ถ้าอยู่ในกรอบ)</p>
       <input id="csvFile" type="file" accept=".csv,text/csv">
       <div id="importPreview"></div>
+      <div id="progress" class="hidden">
+        <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="barBox"><i id="barFill"></i></div>
+        <div id="barText" class="mute" style="margin-top:4px"></div>
+      </div>
       <div class="row" style="margin-top:8px">
         <button id="checkBtn" disabled>ตรวจไฟล์</button>
         <button id="importBtn" disabled>นำเข้า</button>
@@ -279,7 +285,7 @@ function parseCSV(text) {
 }
 
 $('csvFile').onchange = async e => {
-  csvRows = []; $('importBtn').disabled = true; $('checkBtn').disabled = true; show($('importMsg'), '', ''); $('importPreview').innerHTML = '';
+  csvRows = []; $('progress').classList.add('hidden'); $('importBtn').disabled = true; $('checkBtn').disabled = true; show($('importMsg'), '', ''); $('importPreview').innerHTML = '';
   const file = e.target.files[0]; if (!file) return;
   const rows = parseCSV(await file.text());
   if (rows.length < 2) return show($('importMsg'), 'bad', 'ไฟล์ว่างหรืออ่านไม่ได้');
@@ -296,15 +302,27 @@ $('csvFile').onchange = async e => {
   $('checkBtn').disabled = false;
 };
 
+function setProgress(done, total, label) {
+  const pct = total ? Math.round(done * 100 / total) : 0;
+  $('progress').classList.remove('hidden');
+  $('barFill').style.width = pct + '%';
+  $('barBox').setAttribute('aria-valuenow', pct);
+  $('barText').textContent = `${label} ${pct}% (${done}/${total} แถว)`;
+}
+
 async function runImport(dry) {
+  const label = dry ? 'กำลังตรวจไฟล์' : 'กำลังนำเข้า';
+  show($('importMsg'), '', '');
+  setProgress(0, csvRows.length, label);
   const tot = { added: 0, updated: 0, unchanged: 0, coordSkipped: 0, errorCount: 0, errors: [] };
   for (let i = 0; i < csvRows.length; i += IMPORT_CHUNK) {
-    show($('importMsg'), 'ok', `${dry ? 'กำลังตรวจ' : 'กำลังนำเข้า'} ${Math.min(i + IMPORT_CHUNK, csvRows.length)}/${csvRows.length}...`);
     const j = await api({ action: 'importHouses', dryRun: dry, rows: csvRows.slice(i, i + IMPORT_CHUNK) });
     if (!j.ok) { show($('importMsg'), 'bad', j.error + (i ? ` (นำเข้าไปแล้วถึงแถวที่ ${i})` : '')); return null; }
     ['added', 'updated', 'unchanged', 'coordSkipped', 'errorCount'].forEach(k => tot[k] += j[k]);
     tot.errors.push(...j.errors);
+    setProgress(Math.min(i + IMPORT_CHUNK, csvRows.length), csvRows.length, label);
   }
+  setProgress(csvRows.length, csvRows.length, dry ? 'ตรวจไฟล์เสร็จ' : 'นำเข้าเสร็จ');
   return tot;
 }
 
