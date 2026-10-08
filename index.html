@@ -32,6 +32,12 @@
   .bar { height:14px; background:var(--line); border-radius:8px; overflow:hidden; margin-top:10px; }
   .bar > i { display:block; height:100%; width:0; background:var(--brand); transition:width .2s; }
   .swal2-popup { font-family: "Noto Sans Thai", system-ui, sans-serif !important; }
+  .tab.on { background:var(--brand); color:#fff; border-color:var(--brand); }
+  .tab { width:100%; }
+  .urow { display:flex; gap:8px; align-items:center; padding:8px 0; border-top:1px solid var(--line); }
+  .urow .info { flex:1; min-width:0; } .urow .sub { color:var(--mute); font-size:13px; }
+  .urow button { width:auto; padding:6px 10px; font-size:14px; }
+  .urow .del { color:var(--bad); border-color:var(--bad); }
   .hidden { display:none; }
 </style>
 </head>
@@ -39,7 +45,7 @@
 <header>
   <h1>จุดพิกัดหลังคาเรือน</h1>
   <span id="who" class="mute"></span>
-  <button id="adminBtn" class="ghost hidden">นำเข้าบ้าน</button>
+  <button id="adminBtn" class="ghost hidden">ผู้ดูแล</button>
   <button id="logout" class="ghost hidden">ออก</button>
 </header>
 
@@ -54,7 +60,39 @@
     <div id="loginMsg"></div>
   </section>
 
-  <section id="importView" class="hidden">
+  <section id="adminView" class="hidden">
+  <div class="row" style="margin-bottom:12px">
+    <button id="tabImport" class="ghost tab on">นำเข้าบ้าน</button>
+    <button id="tabUsers" class="ghost tab">ผู้ใช้งาน</button>
+  </div>
+
+  <section id="usersView" class="hidden">
+    <div class="card">
+      <div class="row" style="align-items:center"><b>ผู้ใช้งาน</b><button id="newUserBtn" style="flex:0 0 auto;width:auto">+ เพิ่มผู้ใช้</button></div>
+      <div id="userList" style="margin-top:8px"></div>
+    </div>
+    <div class="card hidden" id="userForm">
+      <b id="userFormTitle">เพิ่มผู้ใช้</b>
+      <label for="fUser">ชื่อผู้ใช้ (a-z 0-9 _ . -)</label>
+      <input id="fUser" autocapitalize="none" autocomplete="off">
+      <label for="fName">ชื่อ-สกุล</label>
+      <input id="fName" autocomplete="off">
+      <div class="row">
+        <div><label for="fRole">สิทธิ์</label>
+          <select id="fRole"><option value="collector">ผู้จุดพิกัด</option><option value="approver">ผู้อนุมัติ</option><option value="admin">ผู้ดูแลระบบ</option></select></div>
+        <div><label for="fVill">หมู่ที่รับผิดชอบ</label><input id="fVill" placeholder="เช่น 1,2,5 หรือ *" autocomplete="off"></div>
+      </div>
+      <label for="fPin" id="fPinLabel">PIN (อย่างน้อย 6 ตัว)</label>
+      <input id="fPin" type="password" autocomplete="new-password">
+      <div class="row" style="margin-top:10px">
+        <button id="userSaveBtn">บันทึก</button>
+        <button id="userCancelBtn" class="ghost" style="width:100%">ยกเลิก</button>
+      </div>
+      <div id="userMsg"></div>
+    </div>
+  </section>
+
+  <section id="importView">
     <div class="card">
       <b>นำเข้าข้อมูลบ้านจาก houses.csv</b>
       <p class="mute">คอลัมน์ที่ต้องมี: pcucode, hcode, village_no, village_name, house_no (ตัวเลือก: head_name, lat, lng) &middot;
@@ -71,6 +109,7 @@
       </div>
       <div id="importMsg"></div>
     </div>
+  </section>
   </section>
 
   <section id="appView" class="hidden">
@@ -162,7 +201,7 @@ $('logout').onclick = () => logout();
 
 function logout(m) {
   token = null; store.del('token'); store.del('cfg'); store.del('name'); store.del('role'); role = null; houses = []; current = null;
-  $('appView').classList.add('hidden'); $('importView').classList.add('hidden'); $('adminBtn').classList.add('hidden'); $('loginView').classList.remove('hidden'); $('logout').classList.add('hidden'); $('who').textContent = '';
+  $('appView').classList.add('hidden'); $('adminView').classList.add('hidden'); $('adminBtn').classList.add('hidden'); $('loginView').classList.remove('hidden'); $('logout').classList.add('hidden'); $('who').textContent = '';
   show($('loginMsg'), m ? 'warn' : 'ok', m || '');
 }
 
@@ -283,12 +322,81 @@ const IMPORT_CHUNK = 300;
 let csvRows = [];
 
 $('adminBtn').onclick = () => {
-  const toImport = $('importView').classList.contains('hidden');
-  $('importView').classList.toggle('hidden', !toImport);
-  $('appView').classList.toggle('hidden', toImport);
-  $('adminBtn').textContent = toImport ? 'กลับไปจุดพิกัด' : 'นำเข้าบ้าน';
-  if (!toImport) { buildVillages(); if (map) setTimeout(() => map.invalidateSize(), 50); }
+  const toAdmin = $('adminView').classList.contains('hidden');
+  $('adminView').classList.toggle('hidden', !toAdmin);
+  $('appView').classList.toggle('hidden', toAdmin);
+  $('adminBtn').textContent = toAdmin ? 'กลับไปจุดพิกัด' : 'ผู้ดูแล';
+  if (!toAdmin) { buildVillages(); if (map) setTimeout(() => map.invalidateSize(), 50); }
 };
+
+// ───── แท็บผู้ดูแล + จัดการผู้ใช้ ─────
+function adminTab(name) {
+  $('importView').classList.toggle('hidden', name !== 'import');
+  $('usersView').classList.toggle('hidden', name !== 'users');
+  $('tabImport').classList.toggle('on', name === 'import');
+  $('tabUsers').classList.toggle('on', name === 'users');
+  if (name === 'users') loadUsers();
+}
+$('tabImport').onclick = () => adminTab('import');
+$('tabUsers').onclick = () => adminTab('users');
+
+const ROLE_TH = { collector: 'ผู้จุดพิกัด', approver: 'ผู้อนุมัติ', admin: 'ผู้ดูแลระบบ' };
+let users = [], editing = null;
+
+async function loadUsers() {
+  try {
+    const j = await api({ action: 'listUsers' });
+    if (!j.ok) return toastErr(j.error);
+    users = j.users; renderUsers();
+  } catch (e) { toastErr(e.message); }
+}
+
+function renderUsers() {
+  $('userList').innerHTML = users.map(u => `<div class="urow" data-u="${esc(u.username)}">
+    <div class="info"><b>${esc(u.name)}</b> <span class="mute">(${esc(u.username)})</span>
+      <div class="sub">${esc(ROLE_TH[u.role] || u.role)} · หมู่ ${esc(u.villages === '*' ? 'ทั้งหมด' : u.villages || '-')}</div></div>
+    <button class="ghost" data-act="edit">แก้ไข</button><button class="ghost del" data-act="del">ลบ</button></div>`).join('') || '<p class="mute">ยังไม่มีผู้ใช้</p>';
+}
+
+$('userList').onclick = async e => {
+  const b = e.target.closest('button'); if (!b) return;
+  const u = users.find(x => x.username === b.closest('.urow').dataset.u); if (!u) return;
+  if (b.dataset.act === 'edit') return openUserForm(u);
+  if (!await ask('ลบผู้ใช้?', `ลบ <b>${esc(u.name)}</b> (${esc(u.username)}) ออกจากระบบ<br>ผู้ใช้นี้จะเข้าใช้งานไม่ได้ทันที`, 'ลบ')) return;
+  try {
+    const j = await api({ action: 'deleteUser', username: u.username });
+    if (!j.ok) return toastErr(j.error);
+    loadUsers();
+  } catch (err) { toastErr(err.message); }
+};
+
+function toastErr(m) { if (window.Swal) Swal.fire({ icon: 'error', title: 'ไม่สำเร็จ', text: m, confirmButtonText: 'ปิด' }); else alert(m); }
+
+function openUserForm(u) {
+  editing = u || null;
+  $('userFormTitle').textContent = u ? 'แก้ไขผู้ใช้' : 'เพิ่มผู้ใช้';
+  $('fUser').value = u ? u.username : ''; $('fUser').disabled = !!u;
+  $('fName').value = u ? u.name : ''; $('fRole').value = u ? u.role : 'collector';
+  $('fVill').value = u ? u.villages : ''; $('fPin').value = '';
+  $('fPinLabel').textContent = u ? 'PIN ใหม่ (เว้นว่าง = ไม่เปลี่ยน)' : 'PIN (อย่างน้อย 6 ตัว)';
+  show($('userMsg'), '', ''); $('userForm').classList.remove('hidden'); $('fUser').focus();
+}
+$('newUserBtn').onclick = () => openUserForm(null);
+$('userCancelBtn').onclick = () => $('userForm').classList.add('hidden');
+
+$('userSaveBtn').onclick = async () => {
+  $('userSaveBtn').disabled = true;
+  try {
+    const j = await api({ action: 'saveUser', username: $('fUser').value, name: $('fName').value, role: $('fRole').value,
+      villages: $('fVill').value, pin: $('fPin').value });
+    if (!j.ok) return show($('userMsg'), 'bad', j.error);
+    $('userForm').classList.add('hidden'); $('fPin').value = '';
+    if (window.Swal) Swal.fire({ icon: 'success', title: j.created ? 'เพิ่มผู้ใช้แล้ว' : (j.pinChanged ? 'บันทึกและเปลี่ยน PIN แล้ว' : 'บันทึกแล้ว'), timer: 1600, showConfirmButton: false });
+    loadUsers();
+  } catch (e) { show($('userMsg'), 'bad', e.message); }
+  finally { $('userSaveBtn').disabled = false; }
+};
+
 
 function parseCSV(text) {
   text = text.replace(/^﻿/, '');
