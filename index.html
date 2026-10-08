@@ -38,6 +38,11 @@
   .urow .info { flex:1; min-width:0; } .urow .sub { color:var(--mute); font-size:13px; }
   .urow button { width:auto; padding:6px 10px; font-size:14px; }
   .urow .del { color:var(--bad); border-color:var(--bad); }
+  .hn { background:rgba(0,0,0,.65); color:#fff; border:0; box-shadow:none; padding:1px 5px; font-size:11px; }
+  .hn::before { display:none; }
+  #map.z-low .hn { display:none; }
+  .legend { display:flex; gap:14px; flex-wrap:wrap; font-size:13px; color:var(--mute); margin-top:4px; }
+  .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:4px; vertical-align:middle; }
   .hidden { display:none; }
 </style>
 </head>
@@ -120,11 +125,14 @@
       </div>
       <input id="q" placeholder="ค้นหาเลขที่บ้านหรือชื่อ" style="margin-top:8px">
       <div id="houseInfo" class="mute" style="margin-top:6px"></div>
+      <div id="villStat" class="mute"></div>
     </div>
 
     <div class="card">
       <button id="gpsBtn">ใช้ตำแหน่งปัจจุบัน (GPS)</button>
       <div id="map"></div>
+      <div class="legend"><span><span class="dot" style="background:#16a34a"></span>บ้านที่จุดแล้ว (แตะเพื่อเลือก)</span><span><span class="dot" style="background:#2563eb"></span>บ้านที่กำลังจุด</span>
+        <button id="fitBtn" class="ghost" style="padding:2px 10px;font-size:13px;margin-left:auto">ดูทั้งหมู่</button></div>
       <div id="coordInfo" class="mute">แตะบนแผนที่หรือลากหมุดเพื่อปรับตำแหน่ง</div>
       <div id="msg"></div>
       <p></p>
@@ -147,7 +155,7 @@ const store = {
 };
 
 let role = store.get('role'), token = store.get('token'), cfg = { accWarnM: 30, bbox: null };
-let houses = [], current = null, marker = null, picked = null, map = null, source = 'map', accuracy = null;
+let houseLayer = null, houses = [], current = null, marker = null, picked = null, map = null, source = 'map', accuracy = null;
 
 async function api(body) {
   let res;
@@ -233,16 +241,16 @@ function fillHouses() {
   $('house').innerHTML = list.map(h => `<option value="${esc(h.house_id)}">${esc(h.house_no)}${h.lat !== null ? ' ✓' : ''}</option>`).join('');
   selectHouse();
 }
-$('vill').onchange = fillHouses; $('q').oninput = fillHouses; $('house').onchange = selectHouse;
+$('vill').onchange = () => { fillHouses(); fitVillage(); }; $('q').oninput = fillHouses; $('house').onchange = selectHouse;
 
 function selectHouse() {
   current = houses.find(h => h.house_id === $('house').value) || null;
   picked = null; source = 'map'; accuracy = null; show($('msg'), '', '');
   if (marker) { map.removeLayer(marker); marker = null; }
-  if (!current) { $('houseInfo').textContent = 'ไม่พบบ้าน'; $('saveBtn').disabled = true; return; }
+  if (!current) { $('houseInfo').textContent = 'ไม่พบบ้าน'; $('saveBtn').disabled = true; drawHouses(); return; }
   $('houseInfo').textContent = (current.head_name || '') + (current.lat !== null ? ` · มีพิกัดแล้ว ${current.lat.toFixed(6)}, ${current.lng.toFixed(6)}` : ' · ยังไม่มีพิกัด');
   if (current.lat !== null) { setMarker(current.lat, current.lng); map.setView([current.lat, current.lng], 19); picked = null; }
-  updateCoordInfo();
+  updateCoordInfo(); drawHouses();
 }
 
 // ───── แผนที่ ─────
@@ -251,12 +259,37 @@ function initMap() {
   const b = cfg.bbox;
   const center = b ? [(b.latMin + b.latMax) / 2, (b.lngMin + b.lngMax) / 2] : [13.75, 100.5];
   map = L.map('map').setView(center, 16);
-  const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' });
-  const sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Esri World Imagery' });
-  osm.addTo(map);
+  const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 20, maxNativeZoom: 19, attribution: '© OpenStreetMap' });
+  const sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 20, maxNativeZoom: 18, attribution: 'Esri World Imagery' });
+  sat.addTo(map);   // ภาพดาวเทียมเป็นค่าเริ่มต้น เห็นหลังคาจริง
   L.control.layers({ 'แผนที่': osm, 'ภาพดาวเทียม': sat }).addTo(map);
   map.on('click', e => { setPoint(e.latlng.lat, e.latlng.lng, 'map', null); });
+  houseLayer = L.layerGroup().addTo(map);
+  const zoomClass = () => $('map').classList.toggle('z-low', map.getZoom() < 18);
+  map.on('zoomend', zoomClass); zoomClass();
 }
+
+// วาดหลังคาเรือนของหมู่ที่เลือกที่มีพิกัดแล้ว (ยกเว้นหลังที่กำลังจุด)
+function drawHouses() {
+  if (!map || !houseLayer) return;
+  houseLayer.clearLayers();
+  const inVill = houses.filter(h => h.village_no === $('vill').value);
+  const done = inVill.filter(h => h.lat !== null);
+  $('villStat').textContent = inVill.length ? `หมู่นี้จุดแล้ว ${done.length}/${inVill.length} หลัง (${Math.round(done.length * 100 / inVill.length)}%)` : '';
+  done.forEach(h => {
+    if (current && h.house_id === current.house_id) return;
+    L.circleMarker([h.lat, h.lng], { radius: 7, color: '#fff', weight: 2, fillColor: '#16a34a', fillOpacity: .95, bubblingMouseEvents: false })
+      .bindTooltip(h.house_no, { permanent: true, direction: 'top', offset: [0, -6], className: 'hn' })
+      .on('click', () => { $('house').value = h.house_id; selectHouse(); })
+      .addTo(houseLayer);
+  });
+}
+
+function fitVillage() {
+  const pts = houses.filter(h => h.village_no === $('vill').value && h.lat !== null).map(h => [h.lat, h.lng]);
+  if (pts.length) map.fitBounds(pts, { padding: [30, 30], maxZoom: 19 });
+}
+$('fitBtn').onclick = fitVillage;
 
 function setMarker(lat, lng) {
   if (marker) map.removeLayer(marker);
